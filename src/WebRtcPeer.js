@@ -83,8 +83,8 @@ class WebRtcPeer {
   }
 
   /*
-     * Privates
-     */
+   * Privates
+   */
 
   createPeerConnection() {
     var self = this;

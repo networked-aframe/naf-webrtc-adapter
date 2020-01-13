@@ -36,7 +36,7 @@ Then include and configure `naf-uws-adapter`.
 <body>
     <!-- Set adapter to uws and serverURL to the url of your Heroku server. -->
    <a-scene networked-scene="
-        adapter: uws;
+        adapter: native-webrtc;
         serverURL: ws://localhost:8080;
     ">
   </a-scene>
