@@ -27,7 +27,7 @@ class WebRtcPeer {
         self.handleSessionDescription(sdp);
       },
       function(error) {
-        console.error("WebRtcPeer.offer: " + error);
+        NAF.log.error("WebRtcPeer.offer: " + error);
       }
     );
   }
@@ -50,7 +50,7 @@ class WebRtcPeer {
         break;
 
       default:
-        console.error(
+        NAF.log.error(
           "WebRtcPeer.handleSignal: Unknown signal type " + signal.type
         );
         break;
@@ -58,8 +58,9 @@ class WebRtcPeer {
   }
 
   send(type, data) {
-    // TODO: throw error?
-    if (this.channel === null || this.channel.readyState !== "open") return;
+    if (this.channel === null || this.channel.readyState !== "open") {
+      return;
+    }
 
     this.channel.send(JSON.stringify({ type: type, data: data }));
   }
@@ -151,7 +152,7 @@ class WebRtcPeer {
 
     // error occurred with a remote peer
     this.channel.onerror = function(error) {
-      console.error("WebRtcPeer.channel.onerror: " + error);
+      NAF.log.error("WebRtcPeer.channel.onerror: " + error);
     };
   }
 
@@ -169,7 +170,7 @@ class WebRtcPeer {
         self.handleSessionDescription(sdp);
       },
       function(error) {
-        console.error("WebRtcPeer.handleOffer: " + error);
+        NAF.log.error("WebRtcPeer.handleOffer: " + error);
       }
     );
   }
@@ -189,7 +190,7 @@ class WebRtcPeer {
       new RTCIceCandidate(message),
       function() {},
       function(error) {
-        console.error("WebRtcPeer.handleCandidate: " + error);
+        NAF.log.error("WebRtcPeer.handleCandidate: " + error);
       }
     );
   }
@@ -201,7 +202,7 @@ class WebRtcPeer {
       sdp,
       function() {},
       function(error) {
-        console.error("WebRtcPeer.handleSessionDescription: " + error);
+        NAF.log.error("WebRtcPeer.handleSessionDescription: " + error);
       }
     );
 
@@ -225,9 +226,15 @@ class WebRtcPeer {
       new RTCSessionDescription(message),
       function() {},
       function(error) {
-        console.error("WebRtcPeer.setRemoteDescription: " + error);
+        NAF.log.error("WebRtcPeer.setRemoteDescription: " + error);
       }
     );
+  }
+
+  close() {
+    if (this.pc) {
+      this.pc.close();
+    }
   }
 }
 

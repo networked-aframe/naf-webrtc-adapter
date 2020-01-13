@@ -13,11 +13,11 @@ class NativeWebRtcAdapter {
 
     this.app = "default";
     this.room = "default";
-    this.connectedClients = [];
     this.occupantListener = null;
+    this.myRoomJoinTime = null;
 
     this.peers = {}; // id -> WebRtcPeer
-    this.occupants = {}; // id -> TODO: joinTimestamp
+    this.occupants = {}; // id -> joinTimestamp
   }
 
   setServerUrl(wsUrl) {
@@ -69,16 +69,19 @@ class NativeWebRtcAdapter {
       }
     }
 
-    console.log("Attempting to connect to socket.io");
+    NAF.log.write("Attempting to connect to socket.io");
     const socket = this.socket = io(this.wsUrl);
 
     socket.on("connect", () => {
-      console.log("User connected", socket.id);
+      NAF.log.write("User connected", socket.id);
       self.joinRoom();
     });
 
-    socket.on("connectSuccess", () => {
-      console.log("Successfully joined room", this.room);
+    socket.on("connectSuccess", (data) => {
+      const { joinedTime } = data;
+
+      this.myRoomJoinTime = joinedTime;
+      NAF.log.write("Successfully joined room", this.room, "at server time", joinedTime);
       self.connectSuccess(socket.id);
     });
 
@@ -89,7 +92,7 @@ class NativeWebRtcAdapter {
 
     socket.on("occupantsChanged", data => {
       const { occupants } = data;
-      console.log('occupants changed', data);
+      NAF.log.write('occupants changed', data);
       self.receivedOccupants(occupants);
     });
 
@@ -97,7 +100,10 @@ class NativeWebRtcAdapter {
       const from = packet.from;
       const type = packet.type;
       const data = packet.data;
-      console.log('received data', packet);
+      if (type === 'ice-candidate') {
+        self.peers[from].handleSignal(data);
+        return;
+      }
       self.messageListener(from, type, data);
     }
 
@@ -106,44 +112,87 @@ class NativeWebRtcAdapter {
   }
 
   joinRoom() {
-    console.log("Joining room", this.room);
+    NAF.log.write("Joining room", this.room);
     this.socket.emit("joinRoom", { room: this.room });
   }
 
   receivedOccupants(occupants) {
     delete occupants[NAF.clientId];
+
+    this.occupants = occupants;
+
+    NAF.log.write('occupants=', occupants);
+    const self = this;
+    const localId = NAF.clientId;
+
+    for (var key in occupants) {
+      const remoteId = key;
+      if (this.peers[remoteId]) continue;
+
+      const peer = new WebRtcPeer(
+        localId,
+        remoteId,
+        (data) => {
+          self.socket.emit('send',{
+            from: localId,
+            to: remoteId,
+            type: 'ice-candidate',
+            data,
+            sending: true,
+          });
+        }
+      );
+      peer.setDatachannelListeners(
+        self.openListener,
+        self.closedListener,
+        self.messageListener
+      );
+
+      self.peers[remoteId] = peer;
+    }
+
+    NAF.log.write('peers', self.peers);
+
     this.occupantListener(occupants);
   }
 
-  shouldStartConnectionTo(clientId) {
-    return true; // Handled elsewhere
+  shouldStartConnectionTo(client) {
+    return (this.myRoomJoinTime || 0) <= (client || 0);
   }
 
-  startStreamConnection(clientId) {
-    this.connectedClients.push(clientId);
-    this.openListener(clientId);
+  startStreamConnection(remoteId) {
+    NAF.log.write('starting offer process');
+    this.peers[remoteId].offer();
   }
 
   closeStreamConnection(clientId) {
-    const index = this.connectedClients.indexOf(clientId);
-    if (index > -1) {
-      this.connectedClients.splice(index, 1);
-    }
+    NAF.log.write('closeStreamConnection', clientId, this.peers);
+    this.peers[clientId].close();
+    delete this.peers[clientId];
+    delete this.occupants[clientId];
     this.closedListener(clientId);
   }
 
   getConnectStatus(clientId) {
-    const connected = this.connectedClients.indexOf(clientId) != -1;
+    const peer = this.peers[clientId];
 
-    if (connected) {
-      return NAF.adapters.IS_CONNECTED;
-    } else {
-      return NAF.adapters.NOT_CONNECTED;
+    if (peer === undefined) return NAF.adapters.NOT_CONNECTED;
+
+    switch (peer.getStatus()) {
+      case WebRtcPeer.IS_CONNECTED:
+        return NAF.adapters.IS_CONNECTED;
+
+      case WebRtcPeer.CONNECTING:
+        return NAF.adapters.CONNECTING;
+
+      case WebRtcPeer.NOT_CONNECTED:
+      default:
+        return NAF.adapters.NOT_CONNECTED;
     }
   }
 
   sendData(to, type, data) {
-    this.sendDataGuaranteed(to, type, data);
+    this.peers[to].send(type, data);
   }
 
   sendDataGuaranteed(to, type, data) {
@@ -159,7 +208,9 @@ class NativeWebRtcAdapter {
   }
 
   broadcastData(type, data) {
-    this.broadcastDataGuaranteed(type, data);
+    for (var clientId in this.peers) {
+      this.sendData(clientId, type, data);
+    }
   }
 
   broadcastDataGuaranteed(type, data) {
@@ -172,7 +223,49 @@ class NativeWebRtcAdapter {
     this.socket.emit("broadcast", packet);
   }
 
-  getMediaStream(clientId) { return Promise.reject('Interface method not implemented: getMediaStream')}
+  getMediaStream(clientId) {
+    // TODO implement audio
+    // var that = this;
+    // if (this.audioStreams[clientId]) {
+    //   NAF.log.write("Already had audio for " + clientId);
+    //   return Promise.resolve(this.audioStreams[clientId]);
+    // } else {
+    //   NAF.log.write("Waiting on audio for " + clientId);
+    //   return new Promise(function(resolve) {
+    //     that.pendingAudioRequest[clientId] = resolve;
+    //   });
+    // }
+    return Promise.reject('Interface method not implemented: getMediaStream')
+  }
+
+  updateTimeOffset() {
+    const clientSentTime = Date.now() + this.avgTimeOffset;
+
+    return fetch(document.location.href, { method: "HEAD", cache: "no-cache" })
+      .then(res => {
+        var precision = 1000;
+        var serverReceivedTime = new Date(res.headers.get("Date")).getTime() + (precision / 2);
+        var clientReceivedTime = Date.now();
+        var serverTime = serverReceivedTime + ((clientReceivedTime - clientSentTime) / 2);
+        var timeOffset = serverTime - clientReceivedTime;
+
+        this.serverTimeRequests++;
+
+        if (this.serverTimeRequests <= 10) {
+          this.timeOffsets.push(timeOffset);
+        } else {
+          this.timeOffsets[this.serverTimeRequests % 10] = timeOffset;
+        }
+
+        this.avgTimeOffset = this.timeOffsets.reduce((acc, offset) => acc += offset, 0) / this.timeOffsets.length;
+
+        if (this.serverTimeRequests > 10) {
+          setTimeout(() => this.updateTimeOffset(), 5 * 60 * 1000); // Sync clock every 5 minutes.
+        } else {
+          this.updateTimeOffset();
+        }
+      });
+  }
 
   getServerTime() {
     return -1; // TODO implement
