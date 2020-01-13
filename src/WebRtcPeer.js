@@ -10,24 +10,38 @@ class WebRtcPeer {
     this.channel = null;
   }
 
-  setDatachannelListeners(openListener, closedListener, messageListener) {
+  setDatachannelListeners(openListener, closedListener, messageListener, trackListener) {
     this.openListener = openListener;
     this.closedListener = closedListener;
     this.messageListener = messageListener;
+    this.trackListener = trackListener;
   }
 
-  offer() {
+  offer(options) {
     var self = this;
     // reliable: false - UDP
     this.setupChannel(
       this.pc.createDataChannel(this.channelLabel, { reliable: false })
     );
+
+    // If there are errors with Safari implement this:
+    // https://github.com/OpenVidu/openvidu/blob/master/openvidu-browser/src/OpenViduInternal/WebRtcPeer/WebRtcPeer.ts#L154
+    
+    if (options.sendAudio) {
+      options.localAudioStream.getTracks().forEach(
+        track => self.pc.addTrack(track, options.localAudioStream));
+    }
+
     this.pc.createOffer(
-      function(sdp) {
+      sdp => {
         self.handleSessionDescription(sdp);
       },
-      function(error) {
+      error => {
         NAF.log.error("WebRtcPeer.offer: " + error);
+      },
+      {
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: false,
       }
     );
   }
@@ -122,6 +136,10 @@ class WebRtcPeer {
         self.closedListener(self.remoteId);
       }
     };
+
+    pc.ontrack = (e) => {
+      self.trackListener(self.remoteId, e.streams[0]);
+    }
 
     return pc;
   }

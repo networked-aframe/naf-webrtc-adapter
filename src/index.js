@@ -7,7 +7,6 @@ const WebRtcPeer = require("./WebRtcPeer");
  */
 class NativeWebRtcAdapter {
   constructor() {
-
     if (io === undefined)
       console.warn('It looks like socket.io has not been loaded before NativeWebRtcAdapter. Please do that.')
 
@@ -15,9 +14,12 @@ class NativeWebRtcAdapter {
     this.room = "default";
     this.occupantListener = null;
     this.myRoomJoinTime = null;
+    this.myId = null;
 
     this.peers = {}; // id -> WebRtcPeer
     this.occupants = {}; // id -> joinTimestamp
+    this.audioStreams = {};
+    this.pendingAudioRequest = {};
   }
 
   setServerUrl(wsUrl) {
@@ -33,14 +35,17 @@ class NativeWebRtcAdapter {
   }
 
   setWebRtcOptions(options) {
-    if (options.datachannel === false)
-      console.warn(
+    if (options.datachannel === false) {
+      NAF.log.error(
         "NativeWebRtcAdapter.setWebRtcOptions: datachannel must be true."
       );
-    if (options.audio === true)
-      console.warn("NativeWebRtcAdapter does not support audio yet.");
-    if (options.video === true)
-      console.warn("NativeWebRtcAdapter does not support video yet.");
+    }
+    if (options.audio === true) {
+      this.sendAudio = true;
+    }
+    if (options.video === true) {
+      NAF.log.warn("NativeWebRtcAdapter does not support video yet.");
+    }
   }
 
   setServerConnectListeners(successListener, failureListener) {
@@ -74,15 +79,31 @@ class NativeWebRtcAdapter {
 
     socket.on("connect", () => {
       NAF.log.write("User connected", socket.id);
+      self.myId = socket.id;
       self.joinRoom();
     });
 
     socket.on("connectSuccess", (data) => {
       const { joinedTime } = data;
 
-      this.myRoomJoinTime = joinedTime;
-      NAF.log.write("Successfully joined room", this.room, "at server time", joinedTime);
-      self.connectSuccess(socket.id);
+      self.myRoomJoinTime = joinedTime;
+      NAF.log.write("Successfully joined room", self.room, "at server time", joinedTime);
+
+      if (this.sendAudio) {
+        const mediaConstraints = {
+          audio: true,
+          video: false
+        };
+        navigator.mediaDevices.getUserMedia(mediaConstraints)
+        .then(localStream => {
+          console.error('localstream set', localStream);
+          self.storeAudioStream(self.myId, localStream);
+          self.connectSuccess(self.myId);
+        })
+        .catch(e => NAF.log.error(e));
+      } else {
+        self.connectSuccess(self.myId);
+      }
     });
 
     socket.on("error", err => {
@@ -117,13 +138,13 @@ class NativeWebRtcAdapter {
   }
 
   receivedOccupants(occupants) {
-    delete occupants[NAF.clientId];
+    delete occupants[this.myId];
 
     this.occupants = occupants;
 
     NAF.log.write('occupants=', occupants);
     const self = this;
-    const localId = NAF.clientId;
+    const localId = this.myId;
 
     for (var key in occupants) {
       const remoteId = key;
@@ -145,13 +166,12 @@ class NativeWebRtcAdapter {
       peer.setDatachannelListeners(
         self.openListener,
         self.closedListener,
-        self.messageListener
+        self.messageListener,
+        self.trackListener.bind(self)
       );
 
       self.peers[remoteId] = peer;
     }
-
-    NAF.log.write('peers', self.peers);
 
     this.occupantListener(occupants);
   }
@@ -162,7 +182,19 @@ class NativeWebRtcAdapter {
 
   startStreamConnection(remoteId) {
     NAF.log.write('starting offer process');
-    this.peers[remoteId].offer();
+
+    if (this.sendAudio) {
+      this.getMediaStream(this.myId)
+      .then(stream => {
+        const options = {
+          sendAudio: true,
+          localAudioStream: stream,
+        };
+        this.peers[remoteId].offer(options);
+      });
+    } else {
+      this.peers[remoteId].offer({});
+    }
   }
 
   closeStreamConnection(clientId) {
@@ -197,7 +229,7 @@ class NativeWebRtcAdapter {
 
   sendDataGuaranteed(to, type, data) {
     const packet = {
-      from: NAF.clientId,
+      from: this.myId,
       to,
       type,
       data,
@@ -215,7 +247,7 @@ class NativeWebRtcAdapter {
 
   broadcastDataGuaranteed(type, data) {
     const packet = {
-      from: NAF.clientId,
+      from: this.myId,
       type,
       data,
       broadcasting: true
@@ -223,19 +255,30 @@ class NativeWebRtcAdapter {
     this.socket.emit("broadcast", packet);
   }
 
+  storeAudioStream(clientId, stream) {
+    this.audioStreams[clientId] = stream;
+    if (this.pendingAudioRequest[clientId]) {
+      NAF.log.write("Received pending audio for " + clientId);
+      this.pendingAudioRequest[clientId](stream);
+      delete this.pendingAudioRequest[clientId](stream);
+    }
+  }
+
+  trackListener(clientId, stream) {
+    this.storeAudioStream(clientId, stream);
+  }
+
   getMediaStream(clientId) {
-    // TODO implement audio
-    // var that = this;
-    // if (this.audioStreams[clientId]) {
-    //   NAF.log.write("Already had audio for " + clientId);
-    //   return Promise.resolve(this.audioStreams[clientId]);
-    // } else {
-    //   NAF.log.write("Waiting on audio for " + clientId);
-    //   return new Promise(function(resolve) {
-    //     that.pendingAudioRequest[clientId] = resolve;
-    //   });
-    // }
-    return Promise.reject('Interface method not implemented: getMediaStream')
+    var that = this;
+    if (this.audioStreams[clientId]) {
+      NAF.log.write("Already had audio for " + clientId);
+      return Promise.resolve(this.audioStreams[clientId]);
+    } else {
+      NAF.log.write("Waiting on audio for " + clientId);
+      return new Promise(resolve => {
+        that.pendingAudioRequest[clientId] = resolve;
+      });
+    }
   }
 
   updateTimeOffset() {
