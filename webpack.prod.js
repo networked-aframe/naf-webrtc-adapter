@@ -9,5 +9,6 @@ module.exports = merge(common, {
     filename: package.name + ".min.js"
   },
   devtool: "source-map",
+  mode: "production",
   plugins: [new MinifyPlugin()]
 });
